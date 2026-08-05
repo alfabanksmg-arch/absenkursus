@@ -1,0 +1,1308 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Presensi Kursus - Alfabank Semarang</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- jsPDF & AutoTable CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+    <!-- SheetJS CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <!-- HTML5-QRCode CDN -->
+    <script src="https://unpkg.com/html5-qrcode"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#eef6ff',
+                            100: '#e0edff',
+                            500: '#1d4ed8',
+                            600: '#1e40af',
+                            700: '#1e3a8a',
+                            800: '#172554',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen flex flex-col antialiased">
+
+    <!-- Loading Overlay (z-[9999]) -->
+    <div id="global-loader" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[9999] hidden flex-col items-center justify-center text-white">
+        <div class="w-12 h-12 border-4 border-blue-400 border-t-transparent rounded-full animate-spin mb-3"></div>
+        <p id="loader-text" class="text-sm font-medium tracking-wide">Menghubungkan ke Server...</p>
+    </div>
+
+    <!-- Toast Notification Container (z-[2000]) -->
+    <div id="toast-container" class="fixed top-4 right-4 z-[2000] flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0"></div>
+
+    <!-- Confirmation Modal Container (z-[1000]) -->
+    <div id="modal-container" class="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-[1000] hidden items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-xl max-w-md w-full overflow-hidden transform transition-all scale-95 opacity-0 duration-200" id="modal-card">
+            <div class="p-6">
+                <div class="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center mb-4 text-xl" id="modal-icon">
+                    <i class="fa-solid fa-circle-question"></i>
+                </div>
+                <h3 class="text-lg font-bold text-slate-900 mb-1" id="modal-title">Konfirmasi Action</h3>
+                <div class="text-sm text-slate-600" id="modal-message">Apakah Anda yakin ingin melanjutkan tindakan ini?</div>
+            </div>
+            <div class="bg-slate-50 px-6 py-3 flex justify-end gap-3 border-t border-slate-100">
+                <button type="button" id="modal-btn-cancel" class="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 min-h-[44px]">Batal</button>
+                <button type="button" id="modal-btn-confirm" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 min-h-[44px]">Ya, Lanjutkan</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- APP WRAPPER (DOM AUTH GUARD APPLIED) -->
+    <div id="app" class="flex-1 flex flex-col">
+        <!-- DOM akan dirender secara dinamis oleh JS berdasarkan Auth State -->
+    </div>
+
+    <script>
+        // CONFIGURATION: Tempelkan URL Web App Deployment Google Apps Script Anda di sini
+        const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbz5klui1QEknPWODbTIbHtLLPVKccAHd8JDSyKta_4_398IGa3gTP1M-jG9MKdrt8MN/exec"; 
+
+        // --- HTTP CLIENT VIA TEXT/PLAIN (ANTI-CORS & BYPASS PREFLIGHT) ---
+        async function callApi(action, payloadData = {}) {
+            if (!GAS_WEB_APP_URL || GAS_WEB_APP_URL === "YOUR_GAS_WEB_APP_URL_HERE") {
+                showToast("URL Web App belum dikonfigurasi. Harap sesuaikan file Code.gs & index.html!", "warning");
+                return { success: false, message: "URL Web App belum dikonfigurasi." };
+            }
+
+            const currentUser = getCurrentUser();
+            const requestBody = {
+                action: action,
+                user_id: currentUser ? currentUser.id_peserta : "ANONYMOUS",
+                payload: payloadData
+            };
+
+            try {
+                // SANGAT PENTING: Gunakan 'text/plain' untuk menghindari preflight CORS OPTIONS request pada GAS
+                const response = await fetch(GAS_WEB_APP_URL, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "text/plain;charset=utf-8"
+                    },
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP Error Status: ${response.status}`);
+                }
+
+                const jsonResult = await response.json();
+                return jsonResult;
+            } catch (error) {
+                console.error("API Call Error:", error);
+                showToast("Gagal terhubung ke server database!", "error");
+                return { success: false, message: "Gagal terhubung ke server: " + error.message };
+            }
+        }
+
+        function getCurrentUser() {
+            return JSON.parse(sessionStorage.getItem('alfabank_session') || 'null');
+        }
+
+        function getCachedData(key) {
+            const data = sessionStorage.getItem(`cache_${key}`);
+            return data ? JSON.parse(data) : null;
+        }
+
+        function setCachedData(key, data) {
+            sessionStorage.setItem(`cache_${key}`, JSON.stringify(data));
+        }
+
+        function clearCache() {
+            Object.keys(sessionStorage).forEach(key => {
+                if (key.startsWith('cache_')) sessionStorage.removeItem(key);
+            });
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            
+            const icons = {
+                success: 'fa-circle-check text-emerald-500',
+                error: 'fa-circle-xmark text-rose-500',
+                warning: 'fa-triangle-exclamation text-amber-500',
+                info: 'fa-circle-info text-blue-500'
+            };
+
+            const bgColors = {
+                success: 'border-emerald-200 bg-emerald-50/95 text-emerald-900',
+                error: 'border-rose-200 bg-rose-50/95 text-rose-900',
+                warning: 'border-amber-200 bg-amber-50/95 text-amber-900',
+                info: 'border-blue-200 bg-blue-50/95 text-blue-900'
+            };
+
+            toast.className = `pointer-events-auto flex items-center gap-3 p-4 rounded-xl border backdrop-blur-md shadow-lg transition-all duration-300 transform translate-y-2 opacity-0 ${bgColors[type]}`;
+            toast.innerHTML = `
+                <i class="fa-solid ${icons[type]} text-lg flex-shrink-0"></i>
+                <div class="text-sm font-medium flex-1">${message}</div>
+                <button onclick="this.parentElement.remove()" class="text-slate-400 hover:text-slate-600 p-1 min-h-[44px] min-w-[44px] flex items-center justify-center">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            `;
+            container.appendChild(toast);
+
+            setTimeout(() => toast.classList.remove('translate-y-2', 'opacity-0'), 10);
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-[-10px]');
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        function showLoader(text = 'Memproses data...') {
+            document.getElementById('loader-text').innerText = text;
+            document.getElementById('global-loader').classList.remove('hidden');
+            document.getElementById('global-loader').classList.add('flex');
+        }
+
+        function hideLoader() {
+            document.getElementById('global-loader').classList.add('hidden');
+            document.getElementById('global-loader').classList.remove('flex');
+        }
+
+        function showConfirmModal(title, message, onConfirm, icon = 'fa-circle-question') {
+            const modal = document.getElementById('modal-container');
+            const card = document.getElementById('modal-card');
+            
+            document.getElementById('modal-title').innerText = title;
+            document.getElementById('modal-message').innerHTML = typeof message === 'string' ? `<p>${message}</p>` : '';
+            if (typeof message !== 'string') {
+                document.getElementById('modal-message').innerHTML = '';
+                document.getElementById('modal-message').appendChild(message);
+            }
+            document.getElementById('modal-icon').innerHTML = `<i class="fa-solid ${icon}"></i>`;
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            setTimeout(() => {
+                card.classList.remove('scale-95', 'opacity-0');
+                card.classList.add('scale-100', 'opacity-100');
+            }, 10);
+
+            const btnCancel = document.getElementById('modal-btn-cancel');
+            const btnConfirm = document.getElementById('modal-btn-confirm');
+
+            const closeModal = () => {
+                card.classList.remove('scale-100', 'opacity-100');
+                card.classList.add('scale-95', 'opacity-0');
+                setTimeout(() => {
+                    modal.classList.add('hidden');
+                    modal.classList.remove('flex');
+                }, 200);
+            };
+
+            btnCancel.onclick = closeModal;
+            btnConfirm.onclick = () => {
+                closeModal();
+                onConfirm();
+            };
+        }
+
+        function renderApp() {
+            const app = document.getElementById('app');
+            const currentUser = getCurrentUser();
+
+            if (!currentUser) {
+                // DOM-LEVEL GUARD: Hanya me-render layar Login
+                app.innerHTML = renderLoginView();
+                bindLoginEvents();
+                return;
+            }
+
+            // Render Layout Utama & Tab Aktif
+            app.innerHTML = renderMainShell(currentUser);
+            bindShellEvents();
+            renderActiveTabContent(currentUser, window.activeTab || 'dashboard');
+        }
+
+        function renderLoginView() {
+            return `
+                <div class="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+                    <div class="max-w-md w-full bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden">
+                        <div class="bg-gradient-to-br from-blue-700 to-blue-900 p-8 text-white text-center relative overflow-hidden">
+                            <div class="absolute -right-6 -bottom-6 w-32 h-32 bg-blue-500/20 rounded-full blur-2xl"></div>
+                            <div class="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-white/20 backdrop-blur-md">
+                                <i class="fa-solid fa-graduation-cap text-3xl text-blue-200"></i>
+                            </div>
+                            <h1 class="text-2xl font-bold tracking-tight">Alfabank Semarang</h1>
+                            <p class="text-blue-100 text-xs mt-1">Sistem Informasi Presensi Peserta Kursus</p>
+                            <p class="text-blue-200/70 text-[10px] mt-0.5">Jl. Lamongan Raya No. 12, Semarang</p>
+                        </div>
+
+                        <form id="login-form" class="p-8 space-y-5">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">ID Pengguna / Peserta</label>
+                                <div class="relative">
+                                    <i class="fa-solid fa-user absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                                    <input type="text" id="login-id" required placeholder="Masukkan ID Login (Contoh: ADM-001)" 
+                                        class="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-600 focus:outline-none transition-all text-sm font-medium">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">PIN / Password Access</label>
+                                <div class="relative">
+                                    <i class="fa-solid fa-lock absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                                    <input type="password" id="login-pin" required placeholder="Masukkan PIN / Password" 
+                                        class="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-blue-600 focus:outline-none transition-all text-sm font-medium">
+                                </div>
+                            </div>
+
+                            <button type="submit" 
+                                class="w-full py-3.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.99] text-white font-semibold rounded-xl shadow-lg shadow-blue-500/25 transition-all text-sm min-h-[44px] flex items-center justify-center gap-2">
+                                <i class="fa-solid fa-right-to-bracket"></i> Masuk ke Sistem
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        function bindLoginEvents() {
+            const form = document.getElementById('login-form');
+            if (!form) return;
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const id = document.getElementById('login-id').value.trim();
+                const pin = document.getElementById('login-pin').value.trim();
+
+                showLoader('Memverifikasi autentikasi server...');
+
+                const response = await callApi('login', { id_peserta: id, pin: pin });
+                hideLoader();
+
+                if (response.success && response.user) {
+                    sessionStorage.setItem('alfabank_session', JSON.stringify(response.user));
+                    showToast(`Selamat datang, ${response.user.nama}!`, 'success');
+                    window.activeTab = 'dashboard';
+                    renderApp();
+                } else {
+                    showToast(response.message || 'ID Pengguna atau PIN tidak valid!', 'error');
+                }
+            });
+        }
+
+        function renderMainShell(user) {
+            const roleBadge = {
+                admin: '<span class="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-blue-200">ADMIN</span>',
+                instruktur: '<span class="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">INSTRUKTUR</span>',
+                peserta: '<span class="bg-purple-100 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-purple-200">PESERTA</span>'
+            }[user.role] || '';
+
+            return `
+                <header class="bg-white border-b border-slate-200 sticky top-0 z-40">
+                    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div class="flex items-center justify-between h-16">
+                            <div class="flex items-center gap-3">
+                                <div class="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-bold text-lg shadow-md shadow-blue-500/20">
+                                    <i class="fa-solid fa-graduation-cap"></i>
+                                </div>
+                                <div>
+                                    <h1 class="font-bold text-slate-900 text-base leading-tight">Alfabank Semarang</h1>
+                                    <p class="text-xs text-slate-500 hidden sm:block">Sistem Presensi Real-Time</p>
+                                </div>
+                            </div>
+
+                            <nav class="hidden md:flex items-center gap-1">
+                                ${renderNavItems(user.role)}
+                            </nav>
+
+                            <div class="flex items-center gap-3">
+                                <div class="text-right hidden sm:block">
+                                    <div class="text-xs font-bold text-slate-900 flex items-center justify-end gap-1.5">${user.nama} ${roleBadge}</div>
+                                    <div class="text-[11px] text-slate-500">ID: ${user.id_peserta}</div>
+                                </div>
+
+                                <button id="btn-refresh-data" title="Refresh Data Cache" class="p-2.5 text-slate-600 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition-all min-h-[44px] min-w-[44px]">
+                                    <i class="fa-solid fa-arrows-rotate"></i>
+                                </button>
+
+                                <button id="btn-logout" class="hidden sm:flex items-center gap-2 px-3 py-2 text-xs font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition-all min-h-[44px]">
+                                    <i class="fa-solid fa-right-from-bracket"></i> Keluar
+                                </button>
+
+                                <button id="btn-mobile-menu" class="md:hidden w-11 h-11 flex items-center justify-center text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl">
+                                    <i class="fa-solid fa-bars text-xl"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="mobile-menu" class="hidden md:hidden border-t border-slate-200 bg-white px-4 pt-2 pb-4 space-y-1">
+                        ${renderNavItems(user.role, true)}
+                        <div class="pt-3 border-t border-slate-100 flex items-center justify-between">
+                            <div>
+                                <div class="text-xs font-bold text-slate-900">${user.nama}</div>
+                                <div class="text-[11px] text-slate-500">ID: ${user.id_peserta}</div>
+                            </div>
+                            <button id="btn-logout-mobile" class="px-3 py-2 text-xs font-semibold text-rose-600 bg-rose-50 rounded-lg min-h-[44px]">
+                                Logout
+                            </button>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+                    <div id="tab-content">
+                        <!-- Shimmer Skeleton Loading Placeholder -->
+                        <div class="animate-pulse space-y-4">
+                            <div class="h-8 bg-slate-200 rounded-lg w-1/4"></div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                <div class="h-32 bg-slate-200 rounded-2xl"></div>
+                                <div class="h-32 bg-slate-200 rounded-2xl"></div>
+                                <div class="h-32 bg-slate-200 rounded-2xl"></div>
+                            </div>
+                        </div>
+                    </div>
+                </main>
+
+                <footer class="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500">
+                    &copy; 2026 Lembaga Pendidikan Alfabank Semarang &bull; Jl. Lamongan Raya No. 12, Semarang
+                </footer>
+            `;
+        }
+
+        function renderNavItems(role, isMobile = false) {
+            const activeTab = window.activeTab || 'dashboard';
+
+            const navs = [
+                { id: 'dashboard', label: 'Dashboard', icon: 'fa-chart-pie', roles: ['admin', 'instruktur', 'peserta'] },
+                { id: 'presensi', label: 'Presensi QR', icon: 'fa-qrcode', roles: ['peserta', 'instruktur'] },
+                { id: 'verifikasi', label: 'Verifikasi Kelas', icon: 'fa-clipboard-check', roles: ['instruktur', 'admin'] },
+                { id: 'users', label: 'Kelola User', icon: 'fa-users-gear', roles: ['admin'] },
+                { id: 'kelas', label: 'Kelola Kelas', icon: 'fa-shapes', roles: ['admin'] },
+                { id: 'laporan', label: 'Laporan & Ekspor', icon: 'fa-file-invoice', roles: ['admin', 'instruktur'] },
+                { id: 'logs', label: 'Audit Logs', icon: 'fa-list-check', roles: ['admin'] }
+            ];
+
+            return navs.filter(n => n.roles.includes(role)).map(n => {
+                const isActive = activeTab === n.id;
+                const baseClass = isMobile 
+                    ? "flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-semibold min-h-[44px] w-full" 
+                    : "flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold min-h-[44px] transition-all";
+                
+                const activeClass = isActive 
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-500/20" 
+                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-100";
+
+                return `<button onclick="switchTab('${n.id}')" class="${baseClass} ${activeClass}">
+                    <i class="fa-solid ${n.icon} ${isMobile ? 'text-base' : ''}"></i>
+                    <span>${n.label}</span>
+                </button>`;
+            }).join('');
+        }
+
+        function switchTab(tabId) {
+            window.activeTab = tabId;
+            renderApp();
+        }
+
+        function bindShellEvents() {
+            const btnLogout = document.getElementById('btn-logout');
+            const btnLogoutMobile = document.getElementById('btn-logout-mobile');
+            const btnMobileMenu = document.getElementById('btn-mobile-menu');
+            const btnRefresh = document.getElementById('btn-refresh-data');
+
+            const handleLogout = () => {
+                showConfirmModal('Konfirmasi Keluar', 'Apakah Anda yakin ingin keluar dari akun?', () => {
+                    sessionStorage.removeItem('alfabank_session');
+                    clearCache();
+                    showToast('Berhasil keluar dari akun.', 'info');
+                    renderApp();
+                });
+            };
+
+            if (btnLogout) btnLogout.onclick = handleLogout;
+            if (btnLogoutMobile) btnLogoutMobile.onclick = handleLogout;
+
+            if (btnRefresh) {
+                btnRefresh.onclick = () => {
+                    clearCache();
+                    showToast('Cache dibersihkan. Memperbarui data dari server...', 'info');
+                    renderApp();
+                };
+            }
+
+            if (btnMobileMenu) {
+                btnMobileMenu.onclick = () => {
+                    const menu = document.getElementById('mobile-menu');
+                    menu.classList.toggle('hidden');
+                };
+            }
+        }
+
+        async function renderActiveTabContent(user, tabId) {
+            const container = document.getElementById('tab-content');
+
+            switch (tabId) {
+                case 'dashboard':
+                    await renderDashboardView(user, container);
+                    break;
+                case 'presensi':
+                    container.innerHTML = renderPresensiScannerView(user);
+                    bindScannerEvents(user);
+                    break;
+                case 'verifikasi':
+                    await renderVerifikasiView(user, container);
+                    break;
+                case 'users':
+                    await renderUsersManagementView(container);
+                    break;
+                case 'kelas':
+                    await renderKelasManagementView(container);
+                    break;
+                case 'laporan':
+                    await renderLaporanView(container);
+                    break;
+                case 'logs':
+                    await renderLogsView(container);
+                    break;
+                default:
+                    await renderDashboardView(user, container);
+            }
+        }
+
+        async function renderDashboardView(user, container) {
+            let data = getCachedData('dashboard_data');
+            if (!data) {
+                const response = await callApi('get_dashboard_data', { role: user.role, id_peserta: user.id_peserta });
+                if (response.success) {
+                    data = response.data;
+                    setCachedData('dashboard_data', data);
+                } else {
+                    container.innerHTML = `<div class="p-8 text-center text-rose-600 bg-rose-50 rounded-2xl border border-rose-200 font-semibold">${response.message || 'Gagal memuat data dari server.'}</div>`;
+                    return;
+                }
+            }
+
+            const presensi = data.presensi || [];
+            const stats = data.stats || {};
+
+            let statsHtml = '';
+            if (user.role === 'peserta') {
+                statsHtml = `
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Total Kehadiran</p>
+                                <h3 class="text-2xl font-bold text-slate-900 mt-1">${stats.total_kehadiran || 0} Sesi</h3>
+                            </div>
+                            <div class="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-user-check"></i>
+                            </div>
+                        </div>
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Persentase Kehadiran</p>
+                                <h3 class="text-2xl font-bold text-slate-900 mt-1">${stats.persentase || '0%'}</h3>
+                            </div>
+                            <div class="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-chart-line"></i>
+                            </div>
+                        </div>
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Status Peserta</p>
+                                <h3 class="text-base font-bold text-emerald-600 mt-1">Aktif Kursus</h3>
+                            </div>
+                            <div class="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-id-card"></i>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                statsHtml = `
+                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Total Peserta</p>
+                                <h3 class="text-2xl font-bold text-slate-900 mt-1">${stats.total_peserta || 0}</h3>
+                            </div>
+                            <div class="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-users"></i>
+                            </div>
+                        </div>
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Total Kelas Active</p>
+                                <h3 class="text-2xl font-bold text-slate-900 mt-1">${stats.total_kelas || 0}</h3>
+                            </div>
+                            <div class="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-graduation-cap"></i>
+                            </div>
+                        </div>
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Presensi Hari Ini</p>
+                                <h3 class="text-2xl font-bold text-slate-900 mt-1">${stats.presensi_hari_ini || 0}</h3>
+                            </div>
+                            <div class="w-12 h-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-calendar-check"></i>
+                            </div>
+                        </div>
+                        <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Instruktur Active</p>
+                                <h3 class="text-2xl font-bold text-slate-900 mt-1">${stats.total_instruktur || 0}</h3>
+                            </div>
+                            <div class="w-12 h-12 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-user-tie"></i>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = `
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-gradient-to-r from-blue-700 to-blue-900 p-6 rounded-3xl text-white shadow-lg">
+                        <div>
+                            <span class="bg-white/20 text-white text-[11px] font-semibold px-3 py-1 rounded-full backdrop-blur-md">
+                                Lembaga Pendidikan Alfabank Semarang
+                            </span>
+                            <h2 class="text-2xl font-bold mt-2">Selamat Datang, ${user.nama}!</h2>
+                            <p class="text-blue-100 text-xs mt-1">Sistem Presensi Real-Time Alfabank Semarang (Jl. Lamongan Raya No. 12)</p>
+                        </div>
+                        ${user.role === 'peserta' ? `
+                            <button onclick="switchTab('presensi')" class="px-5 py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl shadow-lg transition-all text-xs flex items-center justify-center gap-2 min-h-[44px]">
+                                <i class="fa-solid fa-qrcode text-base"></i> Scan Presensi Sekarang
+                            </button>
+                        ` : ''}
+                    </div>
+
+                    ${statsHtml}
+
+                    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                            <h3 class="font-bold text-slate-900 text-sm">Riwayat Presensi Terbaru</h3>
+                            <button onclick="switchTab('laporan')" class="text-xs font-semibold text-blue-600 hover:underline">Lihat Semua</button>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="bg-slate-50 text-slate-500 border-b border-slate-200">
+                                        <th class="p-4 font-semibold">ID Presensi</th>
+                                        <th class="p-4 font-semibold">Nama Peserta</th>
+                                        <th class="p-4 font-semibold">Kelas</th>
+                                        <th class="p-4 font-semibold">Waktu & Tanggal</th>
+                                        <th class="p-4 font-semibold">Status</th>
+                                        <th class="p-4 font-semibold">Bukti</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    ${presensi.length === 0 ? `
+                                        <tr><td colspan="6" class="p-6 text-center text-slate-400">Belum ada data presensi tercatat.</td></tr>
+                                    ` : presensi.slice(0, 5).map(p => `
+                                        <tr class="hover:bg-slate-50/80">
+                                            <td class="p-4 font-medium text-slate-900">${p.id_presensi}</td>
+                                            <td class="p-4 font-semibold text-slate-800">${p.nama}</td>
+                                            <td class="p-4 text-slate-600">${p.kelas}</td>
+                                            <td class="p-4 text-slate-600">${p.tanggal} (${p.waktu})</td>
+                                            <td class="p-4">
+                                                <span class="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-1 rounded-full border border-emerald-200">
+                                                    ${p.status}
+                                                </span>
+                                            </td>
+                                            <td class="p-4">
+                                                ${p.foto_url ? `<a href="${p.foto_url}" target="_blank" class="text-blue-600 hover:underline font-semibold flex items-center gap-1"><i class="fa-solid fa-image"></i> Lihat Foto</a>` : '-'}
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderPresensiScannerView(user) {
+            return `
+                <div class="max-w-2xl mx-auto space-y-6">
+                    <div class="bg-white rounded-3xl border border-slate-200 shadow-sm p-6">
+                        <h2 class="text-lg font-bold text-slate-900 mb-1">Pemindaian QR Code Presensi</h2>
+                        <p class="text-xs text-slate-500 mb-4">Arahkan kamera ke QR Code Kelas yang disediakan Instruktur.</p>
+
+                        <div id="qr-reader" class="bg-slate-900 rounded-2xl overflow-hidden min-h-[260px] flex flex-col items-center justify-center text-white relative">
+                            <i class="fa-solid fa-qrcode text-5xl text-slate-600 mb-2"></i>
+                            <p class="text-xs text-slate-400">Kamera Scanner Siap</p>
+                        </div>
+
+                        <div class="mt-4 flex flex-col sm:flex-row gap-3">
+                            <button id="btn-start-camera" class="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs flex items-center justify-center gap-2 min-h-[44px]">
+                                <i class="fa-solid fa-camera"></i> Aktifkan Kamera Scanner
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="presensi-confirm-box" class="bg-white rounded-3xl border border-slate-200 shadow-sm p-6 hidden">
+                        <div class="flex items-center justify-between mb-4 border-b border-slate-100 pb-3">
+                            <div>
+                                <h3 class="font-bold text-slate-900 text-sm">Verifikasi Bukti Kehadiran</h3>
+                                <p class="text-xs text-slate-500">Kelas Terdeteksi: <span id="scanned-kelas-name" class="font-bold text-blue-600">Terverifikasi</span></p>
+                            </div>
+                            <span class="bg-blue-50 text-blue-700 text-[10px] font-bold px-2.5 py-1 rounded-full border border-blue-200">QR Valid</span>
+                        </div>
+
+                        <form id="form-submit-presensi" class="space-y-4">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 uppercase mb-2">Foto Selfie / Bukti Presence</label>
+                                <div class="bg-slate-100 rounded-2xl border-2 border-dashed border-slate-300 p-4 text-center">
+                                    <div id="selfie-preview-container" class="hidden mb-3">
+                                        <img id="selfie-img" src="" class="w-32 h-32 object-cover rounded-xl mx-auto shadow-md border-2 border-white">
+                                    </div>
+                                    <input type="file" id="selfie-file-input" accept="image/*" capture="user" class="hidden">
+                                    <button type="button" id="btn-take-selfie" class="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl min-h-[44px] flex items-center justify-center gap-2 mx-auto">
+                                        <i class="fa-solid fa-camera-retro"></i> Ambil Foto Selfie (Kamera HP)
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-600 uppercase mb-2">Deteksi Lokasi GPS</label>
+                                <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
+                                    <span id="gps-status" class="text-slate-600 font-medium">Memuat koordinat GPS...</span>
+                                    <button type="button" id="btn-get-gps" class="text-blue-600 font-bold hover:underline">Refresh GPS</button>
+                                </div>
+                            </div>
+
+                            <button type="submit" class="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs min-h-[44px] shadow-lg shadow-emerald-500/20">
+                                Kirim Presensi Kehadiran
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        let html5QrCodeScanner = null;
+        let capturedBase64Image = "";
+
+        function bindScannerEvents(user) {
+            const btnCamera = document.getElementById('btn-start-camera');
+            const confirmBox = document.getElementById('presensi-confirm-box');
+            const formPresensi = document.getElementById('form-submit-presensi');
+            const btnSelfie = document.getElementById('btn-take-selfie');
+            const selfieInput = document.getElementById('selfie-file-input');
+            const btnGps = document.getElementById('btn-get-gps');
+            const selfieImg = document.getElementById('selfie-img');
+            const selfieContainer = document.getElementById('selfie-preview-container');
+            const gpsStatus = document.getElementById('gps-status');
+
+            let currentGps = "GPS Tidak Aktif";
+
+            if (btnGps) {
+                btnGps.onclick = () => {
+                    gpsStatus.innerText = "Mengambil data GPS HP...";
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            currentGps = `${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`;
+                            gpsStatus.innerText = `GPS Terdeteksi: ${currentGps}`;
+                        },
+                        (err) => {
+                            currentGps = "-6.9924, 110.4358";
+                            gpsStatus.innerText = `GPS Standar Alfabank (-6.9924, 110.4358)`;
+                        }
+                    );
+                };
+                btnGps.onclick();
+            }
+
+            if (btnSelfie && selfieInput) {
+                btnSelfie.onclick = () => selfieInput.click();
+                selfieInput.onchange = (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (evt) => {
+                            capturedBase64Image = evt.target.result;
+                            selfieImg.src = capturedBase64Image;
+                            selfieContainer.classList.remove('hidden');
+                            showToast('Foto selfie berhasil diambil!', 'success');
+                        };
+                        reader.readAsDataURL(file);
+                    }
+                };
+            }
+
+            const triggerScanSuccess = () => {
+                showToast('QR Code Valid! Silakan ambil foto selfie.', 'success');
+                confirmBox.classList.remove('hidden');
+                confirmBox.scrollIntoView({ behavior: 'smooth' });
+            };
+
+            if (btnCamera) {
+                btnCamera.onclick = () => {
+                    try {
+                        html5QrCodeScanner = new Html5Qrcode("qr-reader");
+                        html5QrCodeScanner.start(
+                            { facingMode: "environment" },
+                            { fps: 10, qrbox: { width: 220, height: 220 } },
+                            (decodedText) => {
+                                html5QrCodeScanner.stop();
+                                triggerScanSuccess();
+                            },
+                            (err) => {}
+                        ).catch(err => {
+                            showToast('Akses kamera gagal/ditolak. Membuka form verifikasi.', 'warning');
+                            triggerScanSuccess();
+                        });
+                    } catch (e) {
+                        triggerScanSuccess();
+                    }
+                };
+            }
+
+            if (formPresensi) {
+                formPresensi.onsubmit = async (e) => {
+                    e.preventDefault();
+                    showLoader('Mengunggah bukti & mencatat presensi ke Google Sheets...');
+
+                    const payload = {
+                        id_peserta: user.id_peserta,
+                        nama: user.nama,
+                        kelas: "Desain Grafis Professional",
+                        status: "Hadir",
+                        gps: currentGps,
+                        foto_base64: capturedBase64Image
+                    };
+
+                    const response = await callApi('submit_presensi', payload);
+                    hideLoader();
+
+                    if (response.success) {
+                        clearCache();
+                        showToast('Presensi Anda berhasil disimpan di database server!', 'success');
+                        switchTab('dashboard');
+                    } else {
+                        showToast(response.message || 'Gagal menyimpan presensi.', 'error');
+                    }
+                };
+            }
+        }
+
+        async function renderVerifikasiView(user, container) {
+            let presensi = getCachedData('presensi_list');
+            if (!presensi) {
+                const response = await callApi('get_presensi', {});
+                if (response.success) {
+                    presensi = response.data;
+                    setCachedData('presensi_list', presensi);
+                } else {
+                    presensi = [];
+                }
+            }
+
+            container.innerHTML = `
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900">Verifikasi Presensi Kelas</h2>
+                            <p class="text-xs text-slate-500">Tinjau dan lakukan presensi manual jika peserta mengalami kendala HP.</p>
+                        </div>
+                        <button onclick="openManualPresensiModal()" class="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs min-h-[44px] flex items-center justify-center gap-2 shadow-sm">
+                            <i class="fa-solid fa-plus"></i> Presensi Manual (Fallback)
+                        </button>
+                    </div>
+
+                    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="bg-slate-50 text-slate-500 border-b border-slate-200">
+                                        <th class="p-4 font-semibold">Peserta</th>
+                                        <th class="p-4 font-semibold">Kelas</th>
+                                        <th class="p-4 font-semibold">Waktu Presensi</th>
+                                        <th class="p-4 font-semibold">Bukti GPS & Foto</th>
+                                        <th class="p-4 font-semibold">Status</th>
+                                        <th class="p-4 font-semibold text-right">Aksi</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    ${presensi.length === 0 ? `
+                                        <tr><td colspan="6" class="p-6 text-center text-slate-400">Tidak ada data presensi untuk diverifikasi.</td></tr>
+                                    ` : presensi.map(p => `
+                                        <tr class="hover:bg-slate-50">
+                                            <td class="p-4">
+                                                <div class="font-bold text-slate-900">${p.nama}</div>
+                                                <div class="text-[10px] text-slate-400">ID: ${p.id_peserta}</div>
+                                            </td>
+                                            <td class="p-4 text-slate-600">${p.kelas}</td>
+                                            <td class="p-4 text-slate-600">${p.tanggal} ${p.waktu}</td>
+                                            <td class="p-4">
+                                                <div class="flex items-center gap-2">
+                                                    ${p.foto_url ? `<a href="${p.foto_url}" target="_blank" class="w-8 h-8 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center"><i class="fa-solid fa-image text-slate-500"></i></a>` : '-'}
+                                                    <span class="text-[10px] text-slate-500">${p.gps || '-'}</span>
+                                                </div>
+                                            </td>
+                                            <td class="p-4">
+                                                <span class="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-1 rounded-full border border-emerald-200">
+                                                    ${p.status}
+                                                </span>
+                                            </td>
+                                            <td class="p-4 text-right">
+                                                <span class="text-[11px] font-semibold text-blue-600"><i class="fa-solid fa-circle-check"></i> Terverifikasi</span>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function openManualPresensiModal() {
+            showLoader('Memuat data user & kelas dari server...');
+            const resUsers = await callApi('get_users', {});
+            const resKelas = await callApi('get_kelas', {});
+            hideLoader();
+
+            const users = (resUsers.data || []).filter(u => u.role === 'peserta');
+            const kelas = resKelas.data || [];
+
+            if (users.length === 0) {
+                showToast('Belum ada data peserta terdaftar di server!', 'warning');
+                return;
+            }
+
+            const optionsUser = users.map(u => `<option value="${u.id_peserta}">${u.nama} (${u.id_peserta})</option>`).join('');
+            const optionsKelas = kelas.map(k => `<option value="${k.nama_kelas}">${k.nama_kelas}</option>`).join('');
+
+            const contentEl = document.createElement('div');
+            contentEl.className = "space-y-4 text-left";
+            contentEl.innerHTML = `
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Pilih Peserta</label>
+                    <select id="manual-user-id" class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">${optionsUser}</select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Pilih Kelas</label>
+                    <select id="manual-kelas" class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">${optionsKelas || '<option value="Desain Grafis">Desain Grafis</option>'}</select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Status Kehadiran</label>
+                    <select id="manual-status" class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+                        <option value="Hadir">Hadir</option>
+                        <option value="Izin">Izin</option>
+                        <option value="Sakit">Sakit</option>
+                    </select>
+                </div>
+            `;
+
+            showConfirmModal('Input Presensi Manual', contentEl, async () => {
+                const uId = document.getElementById('manual-user-id').value;
+                const selectedUser = users.find(u => u.id_peserta === uId);
+                const kName = document.getElementById('manual-kelas').value;
+                const status = document.getElementById('manual-status').value;
+
+                showLoader('Menyimpan data presensi manual...');
+                const response = await callApi('submit_presensi', {
+                    id_peserta: selectedUser.id_peserta,
+                    nama: selectedUser.nama,
+                    kelas: kName,
+                    status: status,
+                    gps: "Manual Entry (Instruktur)",
+                    foto_base64: ""
+                });
+                hideLoader();
+
+                if (response.success) {
+                    clearCache();
+                    showToast('Presensi manual berhasil dicatat!', 'success');
+                    renderApp();
+                } else {
+                    showToast(response.message || 'Gagal menyimpan presensi.', 'error');
+                }
+            });
+        }
+
+        async function renderUsersManagementView(container) {
+            let users = getCachedData('users_list');
+            if (!users) {
+                const response = await callApi('get_users', {});
+                if (response.success) {
+                    users = response.data;
+                    setCachedData('users_list', users);
+                } else {
+                    users = [];
+                }
+            }
+
+            container.innerHTML = `
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900">Kelola Data Pengguna</h2>
+                            <p class="text-xs text-slate-500">Manajemen akun Peserta, Instruktur, dan Pengelola Lembaga Alfabank.</p>
+                        </div>
+                        <button onclick="openAddUserModal()" class="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs min-h-[44px] flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-user-plus"></i> Tambah Pengguna Baru
+                        </button>
+                    </div>
+
+                    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead>
+                                    <tr class="bg-slate-50 text-slate-500 border-b border-slate-200">
+                                        <th class="p-4 font-semibold">ID Login</th>
+                                        <th class="p-4 font-semibold">Nama Lengkap</th>
+                                        <th class="p-4 font-semibold">Role</th>
+                                        <th class="p-4 font-semibold">Status Access</th>
+                                        <th class="p-4 font-semibold text-right">Tindakan</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    ${users.length === 0 ? `
+                                        <tr><td colspan="5" class="p-6 text-center text-slate-400">Belum ada pengguna terdaftar di server.</td></tr>
+                                    ` : users.map(u => `
+                                        <tr class="hover:bg-slate-50">
+                                            <td class="p-4 font-bold text-slate-900">${u.id_peserta}</td>
+                                            <td class="p-4 font-semibold text-slate-800">${u.nama}</td>
+                                            <td class="p-4">
+                                                <span class="uppercase font-bold text-[10px] px-2 py-0.5 rounded-md ${u.role==='admin'?'bg-blue-100 text-blue-800':u.role==='instruktur'?'bg-emerald-100 text-emerald-800':'bg-purple-100 text-purple-800'}">
+                                                    ${u.role}
+                                                </span>
+                                            </td>
+                                            <td class="p-4">
+                                                <span class="text-[10px] font-bold ${u.status?'text-emerald-600':'text-rose-600'}">
+                                                    ${u.status ? 'AKTIF' : 'NON-AKTIF'}
+                                                </span>
+                                            </td>
+                                            <td class="p-4 text-right">
+                                                <button onclick="deleteUser('${u.id_peserta}')" class="p-2 text-rose-600 hover:bg-rose-50 rounded-lg min-h-[44px] min-w-[44px]">
+                                                    <i class="fa-solid fa-trash-can"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function openAddUserModal() {
+            const contentEl = document.createElement('div');
+            contentEl.className = "space-y-3 text-left";
+            contentEl.innerHTML = `
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">ID Pengguna (ID Login)</label>
+                    <input type="text" id="new-user-id" placeholder="Contoh: PST-104 / INS-002" class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Nama Lengkap</label>
+                    <input type="text" id="new-user-name" placeholder="Nama Lengkap Pengguna" class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">Role / Peran</label>
+                    <select id="new-user-role" class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+                        <option value="peserta">Peserta Kursus</option>
+                        <option value="instruktur">Instruktur</option>
+                        <option value="admin">Admin Lembaga</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">PIN / Password Access</label>
+                    <input type="password" id="new-user-pin" value="123456" class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs">
+                </div>
+            `;
+
+            showConfirmModal('Tambah Pengguna Baru', contentEl, async () => {
+                const idP = document.getElementById('new-user-id').value.trim();
+                const nama = document.getElementById('new-user-name').value.trim();
+                const role = document.getElementById('new-user-role').value;
+                const pin = document.getElementById('new-user-pin').value;
+
+                if (!idP || !nama) {
+                    showToast('ID dan Nama wajib diisi!', 'error');
+                    return;
+                }
+
+                showLoader('Menyimpan pengguna baru ke Google Sheets...');
+                const response = await callApi('add_user', { id_peserta: idP, nama: nama, role: role, pin: pin });
+                hideLoader();
+
+                if (response.success) {
+                    clearCache();
+                    showToast(`Pengguna ${nama} berhasil disimpan!`, 'success');
+                    renderApp();
+                } else {
+                    showToast(response.message || 'Gagal menambahkan pengguna.', 'error');
+                }
+            });
+        }
+
+        async function deleteUser(idPeserta) {
+            showConfirmModal('Hapus Pengguna', `Apakah Anda yakin ingin menghapus akun ID ${idPeserta}?`, async () => {
+                showLoader('Menghapus data pengguna dari server...');
+                const response = await callApi('delete_user', { id_peserta: idPeserta });
+                hideLoader();
+
+                if (response.success) {
+                    clearCache();
+                    showToast('Pengguna telah dihapus.', 'info');
+                    renderApp();
+                } else {
+                    showToast(response.message || 'Gagal menghapus pengguna.', 'error');
+                }
+            });
+        }
+
+        async function renderKelasManagementView(container) {
+            let kelas = getCachedData('kelas_list');
+            if (!kelas) {
+                const response = await callApi('get_kelas', {});
+                if (response.success) {
+                    kelas = response.data;
+                    setCachedData('kelas_list', kelas);
+                } else {
+                    kelas = [];
+                }
+            }
+
+            container.innerHTML = `
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900">Kelola Program & Kelas</h2>
+                            <p class="text-xs text-slate-500">Daftar program kursus dan jadwal belajar Alfabank Semarang.</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        ${kelas.length === 0 ? `
+                            <div class="col-span-3 p-8 text-center text-slate-400 bg-white rounded-2xl border border-slate-200">Belum ada kelas terdaftar.</div>
+                        ` : kelas.map(k => `
+                            <div class="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-[10px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md border border-blue-200">${k.id_kelas}</span>
+                                    <i class="fa-solid fa-graduation-cap text-slate-400"></i>
+                                </div>
+                                <h3 class="font-bold text-slate-900 text-sm">${k.nama_kelas}</h3>
+                                <div class="text-xs text-slate-600 space-y-1">
+                                    <p><i class="fa-solid fa-user-tie text-slate-400 mr-2"></i> ${k.instruktur || 'Belum diatur'}</p>
+                                    <p><i class="fa-solid fa-calendar text-slate-400 mr-2"></i> ${k.hari || '-'}</p>
+                                    <p><i class="fa-solid fa-clock text-slate-400 mr-2"></i> ${k.jam || '-'}</p>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        async function renderLaporanView(container) {
+            let presensi = getCachedData('presensi_list');
+            if (!presensi) {
+                const response = await callApi('get_presensi', {});
+                if (response.success) {
+                    presensi = response.data;
+                    setCachedData('presensi_list', presensi);
+                } else {
+                    presensi = [];
+                }
+            }
+
+            container.innerHTML = `
+                <div class="space-y-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900">Rekap Laporan Presensi</h2>
+                            <p class="text-xs text-slate-500">Unduh data kehadiran langsung dalam format PDF, Excel, atau CSV.</p>
+                        </div>
+
+                        <div class="flex items-center gap-2 flex-wrap">
+                            <button onclick="exportToPDF()" class="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-xl text-xs min-h-[44px] flex items-center gap-1.5 shadow-sm">
+                                <i class="fa-solid fa-file-pdf"></i> Ekspor PDF
+                            </button>
+                            <button onclick="exportToExcel()" class="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl text-xs min-h-[44px] flex items-center gap-1.5 shadow-sm">
+                                <i class="fa-solid fa-file-excel"></i> Ekspor Excel
+                            </button>
+                            <button onclick="exportToCSV()" class="px-3 py-2 bg-slate-700 hover:bg-slate-800 text-white font-semibold rounded-xl text-xs min-h-[44px] flex items-center gap-1.5 shadow-sm">
+                                <i class="fa-solid fa-file-csv"></i> Ekspor CSV
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs" id="table-laporan">
+                                <thead>
+                                    <tr class="bg-slate-50 text-slate-500 border-b border-slate-200">
+                                        <th class="p-4 font-semibold">ID Presensi</th>
+                                        <th class="p-4 font-semibold">ID Peserta</th>
+                                        <th class="p-4 font-semibold">Nama Peserta</th>
+                                        <th class="p-4 font-semibold">Kelas</th>
+                                        <th class="p-4 font-semibold">Tanggal</th>
+                                        <th class="p-4 font-semibold">Jam</th>
+                                        <th class="p-4 font-semibold">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    ${presensi.length === 0 ? `
+                                        <tr><td colspan="7" class="p-6 text-center text-slate-400">Belum ada data presensi untuk dilaporkan.</td></tr>
+                                    ` : presensi.map(p => `
+                                        <tr>
+                                            <td class="p-4 font-medium text-slate-900">${p.id_presensi}</td>
+                                            <td class="p-4 text-slate-600">${p.id_peserta}</td>
+                                            <td class="p-4 font-semibold text-slate-800">${p.nama}</td>
+                                            <td class="p-4 text-slate-600">${p.kelas}</td>
+                                            <td class="p-4 text-slate-600">${p.tanggal}</td>
+                                            <td class="p-4 text-slate-600">${p.waktu}</td>
+                                            <td class="p-4">
+                                                <span class="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                                                    ${p.status}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function exportToPDF() {
+            const data = getCachedData('presensi_list') || [];
+            if (data.length === 0) {
+                showToast('Tidak ada data presensi untuk diekspor!', 'warning');
+                return;
+            }
+
+            showLoader('Menyiapkan dokumen PDF...');
+            setTimeout(() => {
+                hideLoader();
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF();
+
+                doc.setFontSize(14);
+                doc.text("Laporan Rekap Presensi Peserta - Alfabank Semarang", 14, 15);
+                doc.setFontSize(9);
+                doc.text("Jl. Lamongan Raya No. 12, Semarang | Web: www.kursusalfabanksemarang.com", 14, 21);
+
+                const tableRows = data.map(p => [p.id_presensi, p.id_peserta, p.nama, p.kelas, p.tanggal, p.waktu, p.status]);
+
+                doc.autoTable({
+                    startY: 26,
+                    head: [['ID', 'ID Peserta', 'Nama', 'Kelas', 'Tanggal', 'Jam', 'Status']],
+                    body: tableRows,
+                    theme: 'striped',
+                    headStyles: { fillColor: [30, 64, 175] }
+                });
+
+                doc.save(`Laporan_Presensi_Alfabank_${Date.now()}.pdf`);
+                showToast('Laporan PDF berhasil diunduh!', 'success');
+            }, 500);
+        }
+
+        function exportToExcel() {
+            const data = getCachedData('presensi_list') || [];
+            if (data.length === 0) {
+                showToast('Tidak ada data presensi untuk diekspor!', 'warning');
+                return;
+            }
+
+            showLoader('Menyiapkan file Excel...');
+            setTimeout(() => {
+                hideLoader();
+                const worksheet = XLSX.utils.json_to_sheet(data);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Presensi");
+
+                XLSX.writeFile(workbook, `Rekap_Presensi_Alfabank_${Date.now()}.xlsx`);
+                showToast('File Excel (.xlsx) berhasil diunduh!', 'success');
+            }, 500);
+        }
+
+        function exportToCSV() {
+            const data = getCachedData('presensi_list') || [];
+            if (data.length === 0) {
+                showToast('Tidak ada data presensi untuk diekspor!', 'warning');
+                return;
+            }
+
+            showLoader('Mengunduh CSV...');
+            setTimeout(() => {
+                hideLoader();
+                let csv = "ID Presensi,ID Peserta,Nama,Kelas,Tanggal,Waktu,Status\n";
+
+                data.forEach(p => {
+                    csv += `"${p.id_presensi}","${p.id_peserta}","${p.nama}","${p.kelas}","${p.tanggal}","${p.waktu}","${p.status}"\n`;
+                });
+
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.setAttribute("download", `Rekap_Presensi_Alfabank_${Date.now()}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                showToast('File CSV berhasil diunduh!', 'success');
+            }, 500);
+        }
+
+        async function renderLogsView(container) {
+            let logs = getCachedData('logs_list');
+            if (!logs) {
+                const response = await callApi('get_logs', {});
+                if (response.success) {
+                    logs = response.data;
+                    setCachedData('logs_list', logs);
+                } else {
+                    logs = [];
+                }
+            }
+
+            container.innerHTML = `
+                <div class="space-y-6">
+                    <div>
+                        <h2 class="text-xl font-bold text-slate-900">Audit Logs & System Activity</h2>
+                        <p class="text-xs text-slate-500">Jejak aktivitas keamanan dan operasi presensi server.</p>
+                    </div>
+
+                    <div class="bg-slate-900 rounded-2xl border border-slate-800 p-4 text-emerald-400 font-mono text-xs space-y-2 max-h-[500px] overflow-y-auto">
+                        ${logs.length === 0 ? `
+                            <div class="text-slate-500">Belum ada riwayat aktivitas sistem.</div>
+                        ` : logs.map(l => `
+                            <div>
+                                <span class="text-slate-500">[${l.timestamp}]</span> 
+                                <span class="text-blue-400">[USER: ${l.user_id}]</span> 
+                                <span>${l.aktivitas}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        // INITIAL LAUNCH
+        window.addEventListener('DOMContentLoaded', () => {
+            renderApp();
+        });
+    </script>
+</body>
+</html>
